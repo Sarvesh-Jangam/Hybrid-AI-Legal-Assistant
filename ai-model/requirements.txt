@@ -1,0 +1,30 @@
+# fastapi
+# uvicorn
+# python-dotenv
+# langchain
+# langchain-community
+# langchain-google-genai
+# faiss-cpu
+# langchain_google_genai
+# fastapi==0.110.0
+# uvicorn[standard]==0.29.0
+# aiohttp==3.9.5
+# PyMuPDF==1.23.22
+# scikit-learn==1.5.0
+# numpy==1.26.4
+# python-multipart
+# dotenv
+
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+python-dotenv
+langchain
+langchain-community
+langchain-google-genai
+faiss-cpu
+aiohttp==3.9.5
+PyMuPDF==1.23.22
+scikit-learn==1.5.0
+numpy==1.26.4
+python-multipart
+sentence-transformers
