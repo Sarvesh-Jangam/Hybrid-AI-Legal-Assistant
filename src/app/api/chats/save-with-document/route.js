@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import Chat from "@/app/models/chat.model.js";
 import mongoose from "mongoose";
 import { prepareDocumentForStorage } from "@/app/utils/documentStorage.js";
+import { connectDB } from "@/app/db/connection";
 
 export async function POST(req) {
   try {
@@ -18,9 +19,7 @@ export async function POST(req) {
     }
 
     // Ensure mongoose is connected
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
-    }
+    await connectDB();
 
     let chatData = {
       userId,
@@ -31,17 +30,7 @@ export async function POST(req) {
 
     // If document is provided, prepare it for storage
     if (documentFile && documentFile.size > 0) {
-      try {
-        console.log('Processing document for storage:', documentFile.name, documentFile.size);
-        const documentData = await prepareDocumentForStorage(documentFile);
-        chatData = { ...chatData, ...documentData };
-        console.log('Document processed successfully');
-      } catch (docError) {
-        console.error('Error processing document:', docError);
-        return NextResponse.json({ 
-          error: `Document processing failed: ${docError.message}` 
-        }, { status: 400 });
-      }
+      chatData.hasDocument = true;
     }
     
     const chat = await Chat.create(chatData);

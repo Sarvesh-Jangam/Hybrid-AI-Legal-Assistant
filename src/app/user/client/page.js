@@ -42,6 +42,13 @@ export default function Home() {
     setQuestion(chat.title || "");
     setFileName(chat.fileName || "");
     
+    if (chat.fileId) {
+      setFileId(chat.fileId);
+      setQueryMode('context');
+    } else {
+      setFileId(null);
+    }
+
     // Load messages for this chat
     try {
       const res = await fetch(`/api/messages?chatId=${chat._id}`);
@@ -62,6 +69,9 @@ export default function Home() {
     setMessages([]);
     setInputMessage("");
     setAiResponse("");
+    setUploadedFile(null);
+    setFileId(null);
+    setQueryMode("existing");
     handleNewChat && handleNewChat();
   };
 
@@ -210,7 +220,6 @@ export default function Home() {
           chatId: selectedChatId,
           saveToHistory: true,
           fileId: fileId,
-          hasUploadedFile: !!uploadedFile
         }),
       });
       
@@ -265,6 +274,31 @@ export default function Home() {
         const data = await response.json();
         if (data.error) throw new Error(data.error);
         setAiResponse(data.answer);
+        // ✅ SAVE CHAT IF NEW
+        if (!selectedChatId) {
+          const saveRes = await fetch('/api/chats/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId,
+              question,
+              fileName: ""
+            })
+          });
+
+          const saveData = await saveRes.json();
+
+          if (saveRes.ok) {
+            setSelectedChatId(saveData.chat._id);
+
+            // Refresh sidebar
+            const chatRes = await fetch(`/api/chats?userId=${userId}`);
+            if (chatRes.ok) {
+              const chatData = await chatRes.json();
+              setChats(chatData.chats || []);
+            }
+          }
+        }
       } else if (queryMode === 'upload') {
         // Handle uploading PDF and querying
         if (!uploadedFile) throw new Error("No file uploaded!");

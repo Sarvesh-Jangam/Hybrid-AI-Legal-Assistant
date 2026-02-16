@@ -40,7 +40,7 @@ export async function POST(request) {
       data.answer ||
       "No defense strategy generated.";
 
-{/*👉*/}       console.log(aiResponse);
+// {/*👉*/}       console.log(aiResponse);
     // Clean and format output
     const formattedResponse = aiResponse
       .replace(/\n{3,}/g, "\n\n")

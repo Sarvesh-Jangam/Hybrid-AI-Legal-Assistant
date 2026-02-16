@@ -1,24 +1,30 @@
 import { NextResponse } from "next/server";
 import Chat from "@/app/models/chat.model.js";
+import { connectDB } from "@/app/db/connection";
 import mongoose from "mongoose";
 
-// Edit chat
+// PATCH
 export async function PATCH(req, { params }) {
   try {
+    await connectDB();
+
     const { id } = await params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return NextResponse.json({ error: "Invalid Chat ID" }, { status: 400 });
+    }
+
     const body = await req.json();
     const { question } = body;
 
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
-    }
+    const title = question
+      ? question.length > 50
+        ? question.substring(0, 50) + "..."
+        : question
+      : undefined;
 
-    // Update title when question changes
-    const title = question ? (question.length > 50 ? question.substring(0, 50) + "..." : question) : undefined;
     const updateData = { ...body };
-    if (title) {
-      updateData.title = title;
-    }
+    if (title) updateData.title = title;
 
     const updatedChat = await Chat.findByIdAndUpdate(
       id,
@@ -36,13 +42,15 @@ export async function PATCH(req, { params }) {
   }
 }
 
-// Delete chat
+// DELETE
 export async function DELETE(req, { params }) {
   try {
-    const { id } = await params;
+    await connectDB();
 
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
+    const { id } = params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return NextResponse.json({ error: "Invalid Chat ID" }, { status: 400 });
     }
 
     const deletedChat = await Chat.findByIdAndDelete(id);

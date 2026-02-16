@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Chat from "@/app/models/chat.model.js";
 import mongoose from "mongoose";
+import { connectDB } from "@/app/db/connection";
 
 export async function POST(req) {
   try {
@@ -11,9 +12,7 @@ export async function POST(req) {
     }
 
     // Ensure mongoose is connected
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
-    }
+    await connectDB();
     
     const chat = await Chat.create({
       userId,

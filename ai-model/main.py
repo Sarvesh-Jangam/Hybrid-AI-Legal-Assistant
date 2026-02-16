@@ -6,12 +6,12 @@ from typing import Dict
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter, CharacterTextSplitter
-from langchain_community.vectorstores import FAISS
+# from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.chains import RetrievalQA
-from langchain.vectorstores.base import VectorStore
+# from langchain.vectorstores.base import VectorStore
+# from langchain_core.vectorstores import VectorStore
 # from langchain_community.vectorstores.utils import distance
 # from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
@@ -20,12 +20,20 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredPDFLoader
 from pdf2image import convert_from_path
 import pytesseract
+from langchain_qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
+from qdrant_client.models import VectorParams, Distance
+from langchain.prompts import PromptTemplate
+
 
 # Load environment variables
 load_dotenv()
 
 # Configure Poppler path from .env (so it works in venv or server)
 POPPLER_PATH = os.getenv("POPPLER_PATH")
+
+vectorstore_cache: Dict[str, QdrantVectorStore] = {}
+
 
 # Ensure Poppler path is in system PATH (so pdf2image / pytesseract can find it)
 if POPPLER_PATH and os.path.isdir(POPPLER_PATH):
@@ -54,16 +62,27 @@ app.add_middleware(
 )
 
 embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+VECTOR_SIZE = 384
 
-# Path to save vectorstores
-VECTORSTORE_DIR = "hf_vectorstores"
-os.makedirs(VECTORSTORE_DIR, exist_ok=True)
+# # Path to save vectorstores
+# VECTORSTORE_DIR = "hf_vectorstores"
+# os.makedirs(VECTORSTORE_DIR, exist_ok=True)
+
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+
+qdrant_client = QdrantClient(
+    url=os.environ["QDRANT_URL"],
+    api_key=os.environ["QDRANT_API_KEY"],
+)
+print(qdrant_client.get_collections())
 
 # -------------------------------
 # Caches
 # -------------------------------
-vectorstore_cache: Dict[str, VectorStore] = {}
-legal_docs_store: Dict[str, VectorStore] = {}  # For /ask-existing
+# vectorstore_cache: Dict[str, VectorStore] = {}
+# legal_docs_store: Dict[str, VectorStore] = {}  # For /ask-existing
+legal_docs_store: Dict[str, QdrantVectorStore] = {}
 
 
 # -------------------------------
@@ -104,20 +123,65 @@ def clean_ai_response(response: str) -> str:
 
 
 
-# -------------------------------
-# Utility: Create FAISS vectorstore safely
-# -------------------------------
-def create_faiss_vectorstore_safe(chunks, embeddings, name: str = None):
-    try:
-        vs = FAISS.from_documents(chunks, embeddings)
-        if name:
-            save_path = os.path.join(VECTORSTORE_DIR, name)
-            vs.save_local(save_path)
-        return vs
-    except Exception as e:
-        print(f"⚠️ Failed to embed documents: {e}")
-        return None
+# # -------------------------------
+# # Utility: Create FAISS vectorstore safely
+# # -------------------------------
+# def create_faiss_vectorstore_safe(chunks, embeddings, name: str = None):
+#     try:
+#         vs = FAISS.from_documents(chunks, embeddings)
+#         if name:
+#             save_path = os.path.join(VECTORSTORE_DIR, name)
+#             vs.save_local(save_path)
+#         return vs
+#     except Exception as e:
+#         print(f"⚠️ Failed to embed documents: {e}")
+#         return None
 
+# def create_qdrant_vectorstore(chunks, embeddings, collection_name: str):
+#     try:
+#         vectorstore = QdrantVectorStore.from_documents(
+#             documents=chunks,
+#             embedding=embeddings,
+#             api_key=QDRANT_API_KEY,
+#             url=QDRANT_URL,
+#             collection_name=collection_name
+#         )
+#         return vectorstore
+#     except Exception as e:
+#         print(f"⚠️ Failed to create Qdrant vectorstore: {e}")
+#         return None
+
+UPLOAD_COLLECTION = "uploaded_docs"
+
+def create_qdrant_vectorstore(chunks, embeddings):
+
+    existing = [
+        c.name for c in qdrant_client.get_collections().collections
+    ]
+
+    if UPLOAD_COLLECTION not in existing:
+
+        print(f"Creating collection: {UPLOAD_COLLECTION}")
+
+        qdrant_client.create_collection(
+            collection_name=UPLOAD_COLLECTION,
+            vectors_config=VectorParams(
+                size=VECTOR_SIZE,
+                distance=Distance.COSINE,
+            ),
+        )
+
+    vectorstore = QdrantVectorStore(
+        client=qdrant_client,
+        collection_name=UPLOAD_COLLECTION,
+        embedding=embeddings,
+    )
+
+    print(f"Inserting documents into uploaded docs.")
+
+    vectorstore.add_documents(chunks)
+
+    return vectorstore
 
 # smart chunk splitting
 def smart_chunk_splitter(docs):
@@ -150,51 +214,8 @@ def smart_chunk_splitter(docs):
     return final_chunks
 
 
-
-# -------------------------------
-# Startup: Preload legal docs
-# -------------------------------
-# @app.on_event("startup")
-# async def preload_legal_documents():
-#     print("🔍 Preloading legal documents...")
-#     # embeddings = GoogleGenerativeAIEmbeddings(
-#     #     model="models/embedding-001",
-#     #     google_api_key=GEMINI_API_KEY
-#     # )
-
-#     predefined_pdfs = {
-#         "Guide to Litigation in India": "data/Guide-to-Litigation-in-India.pdf",
-#         "Legal Compliance & Corporate Laws": "data/Legal-Compliance-Corporate-Laws.pdf",
-#         "legaldoc": "data/legaldoc.pdf",
-#         "Constitution of India": "data/constitution_of_india.pdf",
-#         "IPC": "data/penal_code.pdf",
-#         "Format": "data/format.pdf"
-#     }
-
-#     for name, path in predefined_pdfs.items():
-#         save_path = os.path.join(VECTORSTORE_DIR, name)
-
-#         if os.path.exists(save_path):
-#             print(f"✅ Loading cached vectorstore for: {name}")
-#             vectorstore = FAISS.load_local(save_path, embeddings, allow_dangerous_deserialization=True)
-#         else:
-#             loader = PyPDFLoader(path)
-#             docs = loader.load()
-#             chunks = smart_chunk_splitter(docs)
-
-#             for chunk in chunks:
-#                 chunk.metadata["source"] = name
-
-#             vectorstore = create_faiss_vectorstore_safe(chunks, embeddings, name)
-
-#         if vectorstore:
-#             legal_docs_store[name] = vectorstore
-
-#     print("✅ Legal documents preloaded.")
-
 @app.on_event("startup")
 async def preload_legal_documents():
-    print("🔍 Preloading legal documents with HuggingFace embeddings...")
 
     predefined_pdfs = {
         "Guide to Litigation in India": "data/Guide-to-Litigation-in-India.pdf",
@@ -205,132 +226,53 @@ async def preload_legal_documents():
         "Format": "data/format.pdf"
     }
 
-    for name, path in predefined_pdfs.items():
-        save_path = os.path.join(VECTORSTORE_DIR, name)
+    existing = [
+        c.name for c in qdrant_client.get_collections().collections
+    ]
 
-        if os.path.exists(save_path):
-            print(f"✅ Loading cached HuggingFace vectorstore for: {name}")
-            vectorstore = FAISS.load_local(save_path, embeddings, allow_dangerous_deserialization=True)
+    print("Existing collections:", existing)
+
+    for name, path in predefined_pdfs.items():
+
+        if name in existing:
+
+            print(f"Loading existing collection: {name}")
+
+            vectorstore = QdrantVectorStore(
+                client=qdrant_client,
+                collection_name=name,
+                embedding=embeddings,
+            )
+
         else:
+
+            print(f"Creating new collection: {name}")
+
             loader = PyPDFLoader(path)
+
             docs = loader.load()
+
             chunks = smart_chunk_splitter(docs)
 
             for chunk in chunks:
                 chunk.metadata["source"] = name
 
-            vectorstore = create_faiss_vectorstore_safe(chunks, embeddings, name)
+            vectorstore = create_qdrant_vectorstore(
+                chunks,
+                embeddings,
+                name
+            )
 
-        if vectorstore:
-            legal_docs_store[name] = vectorstore
+        legal_docs_store[name] = vectorstore
 
-    print("✅ HuggingFace legal documents preloaded.")
+        info = qdrant_client.get_collection(name)
 
-# -------------------------------
-# /defend-case: Suggest defense strategy based on case document or text
-# -------------------------------
-# @app.post("/defend-case")
-# async def defend_case(file: UploadFile = None, case_description: str = Form(None)):
-    """
-    Analyze the uploaded legal case or provided description
-    and suggest possible defense strategies in Markdown format.
-    """
-    try:
-        case_text = ""
+        print(f"✔️ {name} is successfully loaded from collections.")
+        print(f"{name} points:", info.points_count)
 
-        # If file provided → extract text
-        if file:
-            file_bytes = await file.read()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(file_bytes)
-                tmp_file_path = tmp_file.name
-
-            try:
-                loader = PyPDFLoader(tmp_file_path)
-                docs = loader.load()
-                case_text = "\n".join([d.page_content for d in docs])
-            except Exception as e:
-                print(f"⚠️ PyPDFLoader failed: {e}")
-                # Try OCR as fallback
-                print("🧠 Performing OCR for case PDF...")
-                case_text = extract_text_with_ocr(tmp_file_path)
-
-            os.unlink(tmp_file_path)
-
-        elif case_description:
-            case_text = case_description.strip()
-
-        else:
-            return {"error": "Please upload a PDF or provide a case description."}
-
-        if not case_text or len(case_text.strip()) < 50:
-            return {"error": "Case text is too short or could not be extracted properly."}
-
-        # Prompt for defense analysis
-        prompt = f"""
-You are an expert Indian defense lawyer and legal strategist.
-Analyze the following case details and explain in Markdown how the defendant could prepare their defense.
-
-Rules:
-- **Never provide false or speculative information.**
-- **Base reasoning on general Indian legal principles.**
-- Organize the response in Markdown as:
-
-### Overview of the Case
-(Brief understanding of the case)
-
-### Key Legal Issues
-- List main legal concerns
-
-### Possible Defense Strategies
-- Explain potential defense arguments
-- Include relevant sections or precedents if applicable
-
-### Supporting Evidence Needed
-- Suggest what kind of evidence or documents can strengthen the defense
-
-### Legal Precautions or Next Steps
-- Mention what the defendant or lawyer should do next
-
----CASE CONTENT---
-{case_text[:4000]}  # truncated for token limit
---------------------
-Please provide a comprehensive yet concise response, ideally between 400 and 700 words depending on case complexity.
-
-Give your full analysis below:
-"""
-
-        llm = ChatGoogleGenerativeAI(
-            model="models/gemini-2.5-flash",
-            google_api_key=GEMINI_API_KEY,
-            temperature=0.3,
-            top_p=0.9,
-            top_k=40,
-            max_output_tokens=3072,
-        )
-
-
-        response = llm.invoke(prompt)
-        print(f"🧾 Gemini raw response: {response}")
-        answer = (
-            response.content
-            if hasattr(response, "content")
-            else getattr(response, "text", str(response))
-        )
-
-        if not answer or not answer.strip():
-            print("⚠️ Gemini returned empty response.")
-            return {"error": "Model did not return a valid defense strategy."}
-
-        cleaned_answer = clean_ai_response(answer)
-
-        return {"defense_strategy": cleaned_answer}
-
-    except Exception as e:
-        return {"error": f"Failed to analyze defense strategy: {str(e)}"}
 
 @app.post("/defend-case")
-async def defend_case(file: UploadFile = None, case_description: str = Form(None)):
+async def defend_case(file: UploadFile = None, case_description: str = Form(None),user_intent: str = Form(None)):
     """
     Analyze the uploaded legal case or provided description
     and suggest possible defense strategies in Markdown format.
@@ -414,40 +356,55 @@ async def defend_case(file: UploadFile = None, case_description: str = Form(None
         # ----------------------------
         # ⚖️ 4. Prepare Legal Defense Prompt
         # ----------------------------
+        user_focus_section = ""
+
+        if user_intent and user_intent.strip():
+            user_focus_section = f"""
+        ### User's Specific Request
+        The user has specifically requested the following focus:
+
+        "{user_intent.strip()}"
+
+        You MUST prioritize addressing this request in your analysis.
+        If the request is narrow (e.g., bail, Section 307 IPC, procedural lapses),
+        focus primarily on that instead of giving a broad generic strategy.
+        """
+        
         prompt = f"""
-You are an expert Indian defense lawyer and legal strategist.
-Analyze the following case details and explain in Markdown how the defendant could prepare their defense.
+        You are an expert Indian defense lawyer and legal strategist.
+        {user_focus_section}
+        Analyze the following case details and explain in Markdown how the defendant could prepare their defense.
 
-Rules:
-- **Never provide false or speculative information.**
-- **Base reasoning on general Indian legal principles.**
-- Organize the response in Markdown as:
+        Rules:
+        - **Never provide false or speculative information.**
+        - **Base reasoning on general Indian legal principles.**
+        - Organize the response in Markdown as:
 
-### Overview of the Case
-(Brief understanding of the case in 2 lines maximum)
+        ### Overview of the Case
+        (Brief understanding of the case in 2 lines maximum)
 
-### Key Legal Issues
-- List main legal concerns
+        ### Key Legal Issues
+        - List main legal concerns
 
-### Possible Defense Strategies
-- Explain potential defense arguments
-- Include relevant sections or precedents if applicable
+        ### Possible Defense Strategies
+        - Explain potential defense arguments
+        - Include relevant sections or precedents if applicable
 
-### Supporting Evidence Needed
-- Suggest what kind of evidence or documents can strengthen the defense
+        ### Supporting Evidence Needed
+        - Suggest what kind of evidence or documents can strengthen the defense
 
-### Legal Precautions or Next Steps
-- Mention what the defendant or lawyer should do next
+        ### Legal Precautions or Next Steps
+        - Mention what the defendant or lawyer should do next
 
-Please provide a comprehensive yet concise response, ideally between 400 and 700 words depending on case complexity.
-If the response is lengthy, please complete it fully — do not stop mid-sentence or omit sections. Continue until the full defense analysis is complete.
+        Please provide a comprehensive yet concise response, ideally between 400 and 700 words depending on case complexity.
+        If the response is lengthy, please complete it fully — do not stop mid-sentence or omit sections. Continue until the full defense analysis is complete.
 
----CASE CONTENT---
-{case_text[:4000]}  # truncated for token limit
---------------------
+        ---CASE CONTENT---
+        {case_text[:4000]}  # truncated for token limit
+        --------------------
 
-Give your full analysis below:
-"""
+        Give your full analysis below:
+        """
 
 
         # ----------------------------
@@ -456,6 +413,7 @@ Give your full analysis below:
         llm = ChatGoogleGenerativeAI(
             model="models/gemini-2.5-flash",
             google_api_key=GEMINI_API_KEY,
+            convert_system_message_to_human=True,
             temperature=0.3,
             top_p=0.9,
             top_k=40,
@@ -490,83 +448,90 @@ Give your full analysis below:
 async def ask_from_existing(query: str = Form(...)):
     if not legal_docs_store:
         return {"error": "Legal documents not loaded yet."}
+    try:
+        all_docs = []
+        for name, vectorstore in legal_docs_store.items():
+            if vectorstore is None:
+                print(f"Skipping null collection: {name}")
+                continue
+            retriever = vectorstore.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 5}
+            )
 
-    all_matches = []
-    for name, vectorstore in legal_docs_store.items():
-        results = vectorstore.similarity_search_with_score(query, k=5)
-        for doc, score in results:
-            if doc and score is not None:
-                all_matches.append({
-                    "source": doc.metadata.get("source", name),
-                    "content": doc.page_content,
-                    "score": score
-                })
+            docs = retriever.invoke(query)
+            for doc in docs:
+                doc.metadata["source"] = name
+                all_docs.append(doc)
 
-    if not all_matches:
-        return {"error": "No relevant information found."}
+        if not all_docs:
+            return {"error": "No relevant information found."}
 
-    from collections import defaultdict
-    source_scores = defaultdict(list)
-    for match in all_matches:
-        source_scores[match["source"]].append(match["score"])
+        # STEP 3: Combine best matches
+        combined_text = "\n\n".join(
+            doc.page_content for doc in all_docs
+        )
 
-    best_source = min(source_scores, key=lambda s: sum(source_scores[s]) / len(source_scores[s]))
-    best_chunks = [m["content"] for m in all_matches if m["source"] == best_source]
-    combined_text = "\n\n".join(best_chunks)
+        best_source = all_docs[0].metadata.get("source", "Unknown")
 
-    prompt = f"""
-You are a professional AI legal research assistant for an online legal platform. 
- Always format answers in **strict Markdown** as follows:
 
-- Use `#`, `##`, or `###` for headings, each on its own line.
-- Use `-` (dash) for bullet points, never `•`.
-- Do not mix headings and bullets. Example:
+        prompt = f"""
+    You are a professional AI legal research assistant for an online legal platform. 
+    Always format answers in **strict Markdown** as follows:
 
-### Reason 1: Temporary Provision
-- Article 370 was originally meant to be temporary...
+    - Use `#`, `##`, or `###` for headings, each on its own line.
+    - Use `-` (dash) for bullet points, never `•`.
+    - Do not mix headings and bullets. Example:
 
-### Reason 2: Full Integration
-- It prevented many central laws from being applied...
+    ### Reason 1: Temporary Provision
+    - Article 370 was originally meant to be temporary...
 
-If no clear heading exists, use plain paragraphs.
-Never return `•` characters or inline `###` headings.
+    ### Reason 2: Full Integration
+    - It prevented many central laws from being applied...
 
-Your task is to answer user queries using ONLY the excerpts given below from the preloaded legal documents.  
+    If no clear heading exists, use plain paragraphs.
+    Never return `•` characters or inline `###` headings.
 
-- Always ground your answer in the provided excerpts.  
-- If the question is about structure, list the **Chapters, Sections, or Clauses** explicitly present.  
-- If you detect cross-references (e.g., "section 376B" from another Act), clarify that it’s a **reference**, not part of this document.  
-- If the document does not provide the answer, say: 
-  "The provided document excerpts do not contain this information."  
+    Your task is to answer user queries using ONLY the excerpts given below from the preloaded legal documents.  
 
----DOCUMENT EXCERPTS---
-{combined_text}
------------------------
+    - Always ground your answer in the provided excerpts.  
+    - If the question is about structure, list the **Chapters, Sections, or Clauses** explicitly present.  
+    - If you detect cross-references (e.g., "section 376B" from another Act), clarify that it’s a **reference**, not part of this document.  
+    - If the document does not provide the answer, say: 
+    "The provided document excerpts do not contain this information."  
 
-User Question: {query}
+    ---DOCUMENT EXCERPTS---
+    {combined_text}
+    -----------------------
 
-Please provide a comprehensive yet concise response, ideally between 400 and 700 words depending on case complexity.
+    User Question: {query}
 
-Answer in a clear, structured, legally accurate way:
-"""
+    Please provide a comprehensive yet concise response, ideally between 400 and 700 words depending on case complexity.
 
-    llm = ChatGoogleGenerativeAI(
-    model="models/gemini-2.5-flash",
-    google_api_key=GEMINI_API_KEY,
-    model_kwargs={
-        "temperature": 0.2,
-        "top_p": 0.8,
-        "top_k": 40,
-        "max_output_tokens": 2048,
-    }
-)
+    Answer in a clear, structured, legally accurate way:
+    """
 
-    response = llm.invoke(prompt)
-    answer = response.content if hasattr(response, 'content') else str(response)
-    cleaned_answer = clean_ai_response(answer)
+        llm = ChatGoogleGenerativeAI(
+        model="models/gemini-2.5-flash",
+        google_api_key=GEMINI_API_KEY,
+        convert_system_message_to_human=True,
+        model_kwargs={
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "top_k": 40,
+            "max_output_tokens": 2048,
+        }
+    )
 
-    return {"answer": cleaned_answer, "source": best_source}
+        response = llm.invoke(prompt)
+        answer = response.content if hasattr(response, 'content') else str(response)
+        cleaned_answer = clean_ai_response(answer)
 
+        return {"answer": cleaned_answer, "source": best_source}
+    
+    except Exception as e:
+        print("ask-existing error:", e)
+        return {"error": str(e)}
 
 def extract_text_with_ocr(pdf_path):
     """Extract text from scanned PDF using OCR"""
@@ -581,44 +546,56 @@ def extract_text_with_ocr(pdf_path):
         return ""
 
 
-# -------------------------------
-# /ask-upload: Upload PDF & Ask
-# -------------------------------
 # @app.post("/ask-upload")
 # async def ask_from_uploaded(query: str = Form(...), file: UploadFile = None):
 #     if file is None:
 #         return {"error": "No file uploaded."}
-
 #     file_bytes = await file.read()
 #     file_id = file_hash(file_bytes)
-#     save_path = os.path.join(VECTORSTORE_DIR, file_id)
-
-#     # embeddings = GoogleGenerativeAIEmbeddings(
-#     #     model="models/gemini-embedding-001",
-#     #     google_api_key=GEMINI_API_KEY
-#     # )
-
+#     # Step 1: Check cache
 #     if file_id in vectorstore_cache:
 #         vectorstore = vectorstore_cache[file_id]
-#     elif os.path.exists(save_path):
-#         vectorstore = FAISS.load_local(
-#             save_path,
-#             embeddings,
-#             allow_dangerous_deserialization=True
-#         )
-#         vectorstore_cache[file_id] = vectorstore
 #     else:
-#         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-#             tmp_file.write(file_bytes)
-#             tmp_file_path = tmp_file.name
-
-#         loader = PyPDFLoader(tmp_file_path)
-#         docs = loader.load()
-#         chunks = smart_chunk_splitter(docs)
-#         vectorstore = create_faiss_vectorstore_safe(chunks, embeddings, name=file_id)
-
-#         if vectorstore:
+#         try:
+#             # Step 2: Try loading existing Qdrant collection
+#             vectorstore = QdrantVectorStore(
+#                 client=qdrant_client,
+#                 collection_name=file_id,
+#                 embedding=embeddings
+#             )
+#             vectorstore.similarity_search("test", k=1)
 #             vectorstore_cache[file_id] = vectorstore
+#             print(f"✅ Loaded existing collection: {file_id}")
+#         except Exception:
+#             print(f"⚡ Creating new collection: {file_id}")
+#             # Step 3: Process PDF
+#             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+#                 tmp_file.write(file_bytes)
+#                 tmp_file_path = tmp_file.name
+#             docs = []
+#             try:
+#                 loader = PyPDFLoader(tmp_file_path)
+#                 docs = loader.load()
+#             except Exception as e:
+#                 print(f"⚠️ PyPDFLoader failed: {e}")
+#             if not docs:
+#                 loader = UnstructuredPDFLoader(tmp_file_path)
+#                 docs = loader.load()
+#             if not docs:
+#                 ocr_text = extract_text_with_ocr(tmp_file_path)
+#                 docs = [Document(page_content=ocr_text)]
+
+#             chunks = smart_chunk_splitter(docs)
+
+#             vectorstore = create_qdrant_vectorstore(
+#                 chunks,
+#                 embeddings,
+#                 file_id
+#             )
+#             vectorstore_cache[file_id] = vectorstore
+#             os.unlink(tmp_file_path)
+
+#     # Step 4: QA Chain
 
 #     llm = ChatGoogleGenerativeAI(
 #         model="models/gemini-2.5-flash",
@@ -631,131 +608,224 @@ def extract_text_with_ocr(pdf_path):
 #         },
 #     )
 
-#     qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=vectorstore.as_retriever())
+#     qa_chain = RetrievalQA.from_chain_type(
+#         llm=llm,
+#         retriever=vectorstore.as_retriever(
+#             search_type="similarity",
+#             search_kwargs={"k": 5}
+#         )
+#     )
+
 #     result = qa_chain.run(query)
 #     cleaned_result = clean_ai_response(result)
-
-#     return {"answer": cleaned_result, "file_id": file_id}
+#     return {
+#         "answer": cleaned_result,
+#         "file_id": file_id
+#     }
 
 @app.post("/ask-upload")
 async def ask_from_uploaded(query: str = Form(...), file: UploadFile = None):
+
     if file is None:
         return {"error": "No file uploaded."}
 
     file_bytes = await file.read()
     file_id = file_hash(file_bytes)
-    save_path = os.path.join(VECTORSTORE_DIR, file_id)
+    print("File ID:", file_id)
 
+    # -------------------------
+    # Save temp file
+    # -------------------------
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(file_bytes)
+        tmp_file_path = tmp_file.name
+
+    docs = []
+
+    # -------------------------
+    # STEP 1: Extract PDF content
+    # -------------------------
+    try:
+        loader = PyPDFLoader(tmp_file_path)
+        docs = loader.load()
+        print("Loaded via PyPDFLoader:", len(docs))
+    except Exception as e:
+        print("PyPDFLoader failed:", e)
+
+    if not docs:
+        try:
+            loader = UnstructuredPDFLoader(tmp_file_path)
+            docs = loader.load()
+            print("Loaded via UnstructuredPDFLoader:", len(docs))
+        except Exception as e:
+            print("UnstructuredPDFLoader failed:", e)
+
+    if not docs:
+        text = extract_text_with_ocr(tmp_file_path)
+        docs = [Document(page_content=text)]
+        print("Loaded via OCR")
+
+    if not docs or not docs[0].page_content.strip():
+        os.unlink(tmp_file_path)
+        return {"error": "Failed to extract readable text from PDF."}
+
+    full_text = "\n".join([d.page_content for d in docs])
+    excerpt = full_text[:3000]
+
+    # -------------------------
+    # STEP 2: LLM Legal Classification
+    # -------------------------
+    llm_classifier = ChatGoogleGenerativeAI(
+        model="models/gemini-2.5-flash",
+        google_api_key=GEMINI_API_KEY,
+        temperature=0.0,
+        max_output_tokens=50,
+    )
+
+    classification_prompt = f"""
+You are a strict legal document classifier.
+
+Determine whether the following document is a LEGAL document.
+
+Legal documents include:
+- Contracts
+- Agreements
+- Court orders
+- FIRs
+- Case files
+- Statutes
+- Legal notices
+- Arbitration documents
+- Government Acts
+
+Respond ONLY with:
+YES  -> if it is legal
+NO   -> if it is not legal
+
+Document excerpt:
+----------------
+{excerpt}
+----------------
+Answer:
+"""
+
+    classification_response = llm_classifier.invoke(classification_prompt)
+    classification_text = classification_response.content.strip().lower()
+
+    print("Classification Result:", classification_text)
+
+    if "yes" not in classification_text:
+        os.unlink(tmp_file_path)
+        return {
+            "error": "Uploaded document does not appear to be a legal document. Only legal documents are allowed."
+        }
+
+    # -------------------------
+    # STEP 3: Vectorstore Handling
+    # -------------------------
     if file_id in vectorstore_cache:
         vectorstore = vectorstore_cache[file_id]
-    elif os.path.exists(save_path):
-        vectorstore = FAISS.load_local(save_path, embeddings, allow_dangerous_deserialization=True)
-        vectorstore_cache[file_id] = vectorstore
+        print("✅ Using cached vectorstore")
+
     else:
-        # Save temp PDF
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(file_bytes)
-            tmp_file_path = tmp_file.name
+        if qdrant_client.collection_exists(file_id):
+            print("✅ Loading existing collection from Qdrant")
 
-        docs = []
-        try:
-            loader = PyPDFLoader(tmp_file_path)
-            docs = loader.load()
-        except Exception as e:
-            print(f"⚠️ PyPDFLoader failed: {e}")
+            vectorstore = QdrantVectorStore(
+                client=qdrant_client,
+                collection_name=file_id,
+                embedding=embeddings
+            )
+        else:
+            print("⚡ Creating new Qdrant collection")
 
-        # If no text, try UnstructuredPDFLoader
-        if not docs or len("".join([d.page_content for d in docs]).strip()) == 0:
-            print("⚠️ No text found with PyPDFLoader — trying UnstructuredPDFLoader...")
-            try:
-                loader = UnstructuredPDFLoader(tmp_file_path)
-                docs = loader.load()
-            except Exception as e:
-                print(f"⚠️ UnstructuredPDFLoader failed: {e}")
+            chunks = smart_chunk_splitter(docs)
 
-        # If still empty, perform OCR
-        if not docs or len("".join([d.page_content for d in docs]).strip()) == 0:
-            print("🧠 Performing OCR on scanned PDF...")
-            ocr_text = extract_text_with_ocr(tmp_file_path)
-            if ocr_text:
-                docs = [Document(page_content=ocr_text)]
-            else:
-                print("❌ OCR process failed — trying Gemini OCR fallback...")
-                try:
-                    from google import genai
-                    client = genai.Client(api_key=GEMINI_API_KEY)
-                    with open(tmp_file_path, "rb") as f:
-                        response = client.models.generate_content(
-                            model="gemini-2.0-flash",
-                            contents=[
-                                {"mime_type": "application/pdf", "data": f.read()},
-                                {"text": "Extract readable text from this scanned PDF document."}
-                            ]
-                        )
-                    text = response.text.strip()
-                    if text:
-                        docs = [Document(page_content=text)]
-                    else:
-                        return {"error": "Gemini OCR also failed to extract text."}
-                except Exception as e:
-                    return {"error": f"OCR and Gemini fallback failed: {str(e)}"}
+            for chunk in chunks:
+                chunk.metadata["file_id"] = file_id
 
-        chunks = smart_chunk_splitter(docs)
-        vectorstore = create_faiss_vectorstore_safe(chunks, embeddings, name=file_id)
-        if vectorstore:
-            vectorstore_cache[file_id] = vectorstore
+            vectorstore = create_qdrant_vectorstore(
+                chunks,
+                embeddings,
+            )
 
-        os.unlink(tmp_file_path)
+        vectorstore_cache[file_id] = vectorstore
 
-    # QA Chain
+    os.unlink(tmp_file_path)
+
+    # -------------------------
+    # STEP 4: Lawyer-Conditioned RAG
+    # -------------------------
+
+    retriever = vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={"k": 5}
+    )
+
     llm = ChatGoogleGenerativeAI(
         model="models/gemini-2.5-flash",
         google_api_key=GEMINI_API_KEY,
-        model_kwargs={
-            "temperature": 0.2,
-            "top_p": 0.8,
-            "top_k": 40,
-            "max_output_tokens": 2048,
-        },
+        temperature=0.2,
+        max_output_tokens=2048
     )
 
-    qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=vectorstore.as_retriever())
-    result = qa_chain.run(query)
-    cleaned_result = clean_ai_response(result)
+    legal_prompt_template = """
+You are a highly experienced Indian legal practitioner.
 
-    return {"answer": cleaned_result, "file_id": file_id}
+You must answer strictly based on the provided document context.
 
+Rules:
+- Respond as a lawyer advising a client.
+- Maintain professional legal tone.
+- Reference clauses/sections where applicable.
+- Do NOT fabricate information.
+- If insufficient information exists, explicitly state:
+  "The document does not provide sufficient information to answer this question."
+- Provide structured reasoning.
 
+Structure your response exactly as:
 
-# -------------------------------
-# /chat: General chat endpoint
-# -------------------------------
-@app.post("/chat")
-async def general_chat(query: str = Form(...)):
-    """General chat endpoint for conversational AI without specific document context"""
-    
-    prompt = f"""
-You are a helpful AI legal assistant. Provide professional, accurate, and helpful legal guidance.
-Be conversational but maintain professionalism. If a question requires specific legal documents 
-or analysis, suggest the user upload a document or use the legal database.
+### Legal Analysis
+(Explain relevant provisions from document)
 
-User Question: {query}
+### Legal Implications
+(Explain risks, liabilities, exposure)
 
-Provide a helpful, informative response:
-Please provide a comprehensive yet concise response, ideally between 400 and 700 words depending on case complexity.
+### Recommended Action
+(Practical legal steps client should consider)
 
+Context:
+----------------
+{context}
+----------------
+
+User Question:
+{question}
+
+Provide your legal opinion below:
 """
 
-    llm = ChatGoogleGenerativeAI(
-        model="models/gemini-2.5-pro",
-        temperature=0.3,
-        google_api_key=GEMINI_API_KEY
+    LEGAL_PROMPT = PromptTemplate(
+        template=legal_prompt_template,
+        input_variables=["context", "question"]
     )
-    response = llm.invoke(prompt)
-    answer = response.content if hasattr(response, 'content') else str(response)
-    cleaned_answer = clean_ai_response(answer)
 
-    return {"response": cleaned_answer}
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=retriever,
+        chain_type="stuff",
+        chain_type_kwargs={"prompt": LEGAL_PROMPT},
+        return_source_documents=False
+    )
+
+    result = qa_chain({"query": query})
+    answer = result["result"]
+
+    return {
+        "answer": clean_ai_response(answer),
+        "file_id": file_id
+    }
+
 
 # -------------------------------
 # /chat: General chat endpoint
@@ -795,6 +865,7 @@ Answer:
     llm = ChatGoogleGenerativeAI(
     model="models/gemini-2.5-flash",
     google_api_key=GEMINI_API_KEY,
+    convert_system_message_to_human=True,
     model_kwargs={
         "temperature": 0.2,
         "top_p": 0.8,
@@ -825,22 +896,26 @@ async def save_chat(chat_id: str = Form(...), user_message: str = Form(...), ai_
 @app.post("/ask-context")
 async def ask_from_context(query: str = Form(...), file_id: str = Form(...)):
     if file_id not in vectorstore_cache:
-        save_path = os.path.join(VECTORSTORE_DIR, file_id)
-        if os.path.exists(save_path):
-            # embeddings = GoogleGenerativeAIEmbeddings(
-            #     model="models/embedding-001",
-            #     google_api_key=GEMINI_API_KEY
-            # )
-            vectorstore = FAISS.load_local(save_path, embeddings, allow_dangerous_deserialization=True)
+        try:
+            vectorstore = QdrantVectorStore(
+                client=qdrant_client,
+                collection_name=file_id,
+                embedding=embeddings
+            )
+
+            vectorstore.similarity_search("test", k=1)
+
             vectorstore_cache[file_id] = vectorstore
-        else:
-            return {"error": "Context not found. Please upload the file first."}
+
+        except Exception:
+            return {"error": "Context not found. Please upload file first."}
 
     vectorstore = vectorstore_cache[file_id]
 
     llm = ChatGoogleGenerativeAI(
     model="models/gemini-2.5-flash",
     google_api_key=GEMINI_API_KEY,
+    convert_system_message_to_human=True,
     model_kwargs={
         "temperature": 0.2, # Lower temperature for more consistent formatting
         "top_p": 0.8,
@@ -849,7 +924,20 @@ async def ask_from_context(query: str = Form(...), file_id: str = Form(...)):
     }
 )
 
-    qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=vectorstore.as_retriever())
+    qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=vectorstore.as_retriever(
+        search_type="similarity",
+        search_kwargs={
+            "k": 5,
+            "filter": {
+                "must": [
+                    {
+                        "key": "file_id",
+                        "match": {"value": file_id}
+                    }
+                ]
+            }
+        }
+    ))
     result = qa_chain.run(query)
     cleaned_result = clean_ai_response(result)
 

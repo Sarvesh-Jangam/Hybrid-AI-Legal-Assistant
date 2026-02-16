@@ -10,4 +10,6 @@ const ConsultationSchema = new mongoose.Schema({
   meetingLink: { type: String }, // Google Meet link for video consultations
 }, { timestamps: true });
 
+ConsultationSchema.index({ userId: 1, updatedAt: -1 })
+
 export default mongoose.models.Consultation || mongoose.model("Consultation", ConsultationSchema);

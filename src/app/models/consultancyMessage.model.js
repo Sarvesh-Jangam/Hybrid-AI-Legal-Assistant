@@ -12,4 +12,6 @@ const ConsultationMessageSchema = new mongoose.Schema({
   readByLawyer: { type: Boolean, default: false },
 }, { timestamps: true });
 
+ConsultationMessageSchema.index({ senderId: 1, senderRole:1, updatedAt: -1 })
+
 export default mongoose.models.ConsultationMessage || mongoose.model("ConsultationMessage", ConsultationMessageSchema);

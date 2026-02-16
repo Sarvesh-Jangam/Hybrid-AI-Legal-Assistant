@@ -2,15 +2,24 @@ import { NextResponse } from "next/server";
 import Chat from "@/app/models/chat.model.js";
 import Message from "@/app/models/message.model.js";
 import mongoose from "mongoose";
+import { connectDB } from "@/app/db/connection";
 
 export async function POST(request) {
-    const { prompt, contractText, userId, chatId, saveToHistory = true, uploadedFile, fileId, hasUploadedFile } = await request.json();
+    const { prompt, contractText, userId, chatId, saveToHistory = true, fileId } = await request.json();
+
+     // 🔒 Basic validation
+    if (!prompt || !prompt.trim()) {
+      return NextResponse.json(
+        { error: "Prompt is required" },
+        { status: 400 }
+      );
+    }
 
     let response;
     let data;
 
     // Determine which endpoint to use based on context
-    if (hasUploadedFile && fileId) {
+    if (fileId) {
         // Use context-based chat with uploaded document
         const formData = new FormData();
         formData.append("query", prompt);
@@ -64,9 +73,7 @@ export async function POST(request) {
     if (saveToHistory && userId) {
         try {
             // Ensure mongoose is connected
-            if (mongoose.connection.readyState === 0) {
-                await mongoose.connect(process.env.MONGODB_URI);
-            }
+            await connectDB();
 
             let currentChatId = chatId;
 
@@ -75,7 +82,8 @@ export async function POST(request) {
                 const newChat = await Chat.create({
                     userId,
                     title: prompt.length > 50 ? prompt.substring(0, 50) + "..." : prompt,
-                    fileName: contractText || ""
+                    fileName: contractText || "",
+                    fileId: fileId || ""
                 });
                 currentChatId = newChat._id.toString();
             }

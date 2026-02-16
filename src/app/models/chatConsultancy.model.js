@@ -11,4 +11,6 @@ const ChatConsultancySchema = new mongoose.Schema({
   unreadForLawyer: { type: Number, default: 0 },
 }, { timestamps: true });
 
+ChatConsultancySchema.index({ clientId: 1, lawyerId:1, updatedAt: -1 });
+
 export default mongoose.models.ChatConsultancy || mongoose.model("ChatConsultancy", ChatConsultancySchema);

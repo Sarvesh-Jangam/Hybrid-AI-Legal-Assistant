@@ -2,19 +2,18 @@ import { NextResponse } from "next/server";
 import Chat from "@/app/models/chat.model.js";
 import mongoose from "mongoose";
 import { base64ToFile } from "@/app/utils/documentStorage.js";
+import { connectDB } from "@/app/db/connection";
 
 export async function GET(request, { params }) {
   try {
-    const { id } = params;
+    const { id } = await params;
     
     if (!id) {
       return NextResponse.json({ error: "Chat ID is required" }, { status: 400 });
     }
 
     // Ensure mongoose is connected
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
-    }
+    await connectDB();
 
     const chat = await Chat.findById(id);
     
@@ -53,9 +52,7 @@ export async function HEAD(request, { params }) {
     }
 
     // Ensure mongoose is connected
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
-    }
+    await connectDB();
 
     const chat = await Chat.findById(id).select('hasDocument fileName documentSize documentType');
     
