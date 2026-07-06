@@ -22,7 +22,7 @@ export async function POST(request) {
     }
 
     // Forward to FastAPI backend
-    const response = await fetch("http://localhost:8000/defend-case", {
+    const response = await fetch(`${process.env.FASTAPI_URL}/defend-case`, {
       method: "POST",
       body: formData,
     });

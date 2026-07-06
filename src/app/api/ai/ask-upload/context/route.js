@@ -5,7 +5,7 @@ export async function POST(req) {
 
   // formData should contain "query" and "file_id" file_id is returned from ask-upload
 
-  const response = await fetch("http://localhost:8000/ask-context", {
+  const response = await fetch(`${process.env.FASTAPI_URL}/ask-context`, {
     method: "POST",
     body: formData,
   });

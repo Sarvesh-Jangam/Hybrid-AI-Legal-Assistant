@@ -25,7 +25,7 @@ export async function POST(request) {
         formData.append("query", prompt);
         formData.append("file_id", fileId);
 
-        response = await fetch("http://localhost:8000/ask-context", {
+        response = await fetch(`${process.env.FASTAPI_URL}/ask-context`, {
             method: "POST",
             body: formData,
         });
@@ -34,7 +34,7 @@ export async function POST(request) {
         const formData = new FormData();
         formData.append("query", prompt);
 
-        response = await fetch("http://localhost:8000/ask-existing", {
+        response = await fetch(`${process.env.FASTAPI_URL}/ask-existing`, {
             method: "POST",
             body: formData,
         });
@@ -43,7 +43,7 @@ export async function POST(request) {
         const formData = new FormData();
         formData.append("query", prompt);
 
-        response = await fetch("http://localhost:8000/chat", {
+        response = await fetch(`${process.env.FASTAPI_URL}/chat`, {
             method: "POST",
             body: formData,
         });

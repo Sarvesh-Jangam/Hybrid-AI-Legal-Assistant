@@ -5,7 +5,7 @@ export async function POST(req) {
 
   //form data should have query field
 
-  const response = await fetch("http://localhost:8000/ask-existing", {
+  const response = await fetch(`${process.env.FASTAPI_URL}/ask-existing`, {
     method: "POST",
     body: formData,
   });

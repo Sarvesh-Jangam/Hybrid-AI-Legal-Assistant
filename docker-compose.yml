@@ -1,0 +1,24 @@
+services:
+
+  ai-model:
+    build: ./ai-model
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./ai-model/.env
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      - FASTAPI_URL=http://ai-model:8000
+    depends_on:
+      - ai-model
+    restart: unless-stopped

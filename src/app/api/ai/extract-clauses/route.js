@@ -13,7 +13,7 @@ export async function POST(request) {
     const backendFormData = new FormData();
     backendFormData.append('file', file);
 
-    const response = await fetch('http://localhost:8000/extract-clauses', {
+    const response = await fetch(`${process.env.FASTAPI_URL}/extract-clauses`, {
       method: 'POST',
       body: backendFormData,
     });

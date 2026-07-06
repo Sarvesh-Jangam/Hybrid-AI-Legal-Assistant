@@ -15,7 +15,7 @@ export async function POST(request) {
     backendFormData.append('file1', file1);
     backendFormData.append('file2', file2);
 
-    const response = await fetch('http://localhost:8000/compare-clauses', {
+    const response = await fetch(`${process.env.FASTAPI_URL}/compare-clauses`, {
       method: 'POST',
       body: backendFormData,
     });

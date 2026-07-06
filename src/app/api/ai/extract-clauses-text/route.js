@@ -12,7 +12,7 @@ export async function POST(request) {
     const formData = new FormData();
     formData.append('document_text', document_text);
 
-    const response = await fetch('http://localhost:8000/extract-clauses-from-text', {
+    const response = await fetch(`${process.env.FASTAPI_URL}/extract-clauses-from-text`, {
       method: 'POST',
       body: formData,
     });

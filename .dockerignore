@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+**/__pycache__/
+*.pyc
+.env
+.env.local*
+.vscode
+**/venv
+ai-model/
+*.md
